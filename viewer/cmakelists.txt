@@ -1,0 +1,90 @@
+# ============================================================================
+# Viewer application: SDL3 + Vulkan 1.4, links the header-only kernel.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Sources - CONFIGURE_DEPENDS picks up files as they are added during the
+# incremental assembly of this project. In a mature repo you would replace
+# this with an explicit list (Part 15 provides the final explicit version).
+# ----------------------------------------------------------------------------
+file(GLOB CAD_VIEWER_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/app/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/app/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/graphics/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/graphics/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/render/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/render/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scene/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scene/*.hpp")
+
+if(NOT CAD_VIEWER_SOURCES)
+    message(STATUS "viewer: no sources yet - executable target skipped")
+    return()
+endif()
+
+# ----------------------------------------------------------------------------
+# SDL3 resolution order:
+#   1. an SDL3 already visible to CMake (vcpkg toolchain / CAD_USE_SYSTEM_SDL3)
+#   2. otherwise: fetch and build the pinned release from GitHub (static)
+# ----------------------------------------------------------------------------
+if(CAD_USE_SYSTEM_SDL3)
+    find_package(SDL3 CONFIG REQUIRED)
+else()
+    find_package(SDL3 CONFIG QUIET)
+endif()
+
+if(NOT TARGET SDL3::SDL3)
+    message(STATUS "SDL3 not found - fetching ${CAD_SDL3_GIT_TAG} from GitHub")
+    message(STATUS "(the first configure compiles SDL; later ones are instant)")
+    include(FetchContent)
+    FetchContent_Declare(SDL3
+        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+        GIT_TAG        "${CAD_SDL3_GIT_TAG}"
+        GIT_SHALLOW    TRUE)
+    set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(SDL3)
+endif()
+
+if(NOT TARGET SDL3::SDL3)
+    message(FATAL_ERROR "SDL3 could not be located or built. Either install it "
+        "via vcpkg ('vcpkg install sdl3' + toolchain file + CAD_USE_SYSTEM_SDL3=ON) "
+        "or check network access to github.com.")
+endif()
+
+# ----------------------------------------------------------------------------
+# Executable (console subsystem on purpose: log output is valuable during
+# development; flip to WIN32 + AttachConsole later if you want a GUI exe)
+# ----------------------------------------------------------------------------
+add_executable(CadViewer ${CAD_VIEWER_SOURCES})
+
+target_link_libraries(CadViewer PRIVATE
+    cad::kernel
+    Vulkan::Vulkan
+    SDL3::SDL3)
+
+cad_target_warnings(CadViewer)
+
+# Validation layers are compiled in for Debug builds (if enabled), and the
+# runtime still checks availability before actually using them.
+target_compile_definitions(CadViewer PRIVATE
+    $<$<AND:$<CONFIG:Debug>,$<BOOL:${CAD_ENABLE_VALIDATION}>>:CAD_ENABLE_VALIDATION=1>)
+
+# ----------------------------------------------------------------------------
+# Shaders: compile + embed once the GLSL sources exist (Part 12)
+# ----------------------------------------------------------------------------
+file(GLOB CAD_SHADER_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/shaders/*.vert"
+    "${CMAKE_SOURCE_DIR}/shaders/*.frag")
+
+if(CAD_SHADER_SOURCES)
+    include(CompileShaders)
+    cad_compile_shaders(CadViewer
+        SOURCES ${CAD_SHADER_SOURCES}
+        OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+        GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+    target_include_directories(CadViewer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/gen")
+endif()
+
+# Comfortable F5 debugging from VS (harmless under Ninja)
+set_property(TARGET CadViewer PROPERTY
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
